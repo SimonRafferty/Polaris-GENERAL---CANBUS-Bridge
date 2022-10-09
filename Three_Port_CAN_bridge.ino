@@ -20,7 +20,7 @@
   and generate a suitable frame to send to the vehicle, but not back to the ECU
 */
 
-#  include <FlexCAN_T4.h>
+#include <FlexCAN_T4.h>
 #include "canframe.h"
 #include <TinyGPS++.h>
 #include <SoftwareSerial.h>
@@ -50,7 +50,7 @@ const float RPM_SCALE_HIGH    = 11.88; //high gear
 //Things we might want to read and send to the EV Drive Train:  (Byte count starting from Zero [0])
 const uint32_t CAN_ID_SHIFTER        = 0x18F00500; //Byte [5] - 4C=L, 48=H, 4E=N, 52=R, 50=P - Gear Selector
 const uint32_t CAN_ID_THROTTLE       = 0x18FEF200; //Byte [3] - 00=Minimum, ED=Maximum
-const uint32_t CAN_ID_HANDBRAKE      = 0x18D00000; //Byte [0] - 37=Applied, 33=Released
+const uint32_t CAN_ID_HANDBRAKE      = 0x18FEF100; //Byte [0] - 37=Applied, 33=Released
 
 const uint32_t CAN_ID_FOOTBRAKE      = 0x18FEF1FE; //Byte [3] - DF=Applied, CF=Released
 const uint32_t CAN_ID_SEATBELT       = 0x18FF6CFE; //Byte [1] - F7=Secured, F3=Released - Seatbelt
@@ -67,7 +67,11 @@ const uint32_t CAN_ID_ENG_TEMP       = 0x18FEEE00; //Byte [0] - Engine Temperatu
 const uint32_t CAN_ID_FUEL_LEVEL     = 0x18FEFC00; //Byte [1] - Fuel level 0-254
 const uint32_t CAN_ID_ENG_HOURS      = 0x18FEE500; //Byte [0] LSB, Byte [1] MSB - Total Engine Hours
 
-const uint32_t CAN_ID_DISTANCE      = 0x18FEC100; //Byte [0] LSB, Byte [3] MSB - Total Engine Hours
+const uint32_t CAN_ID_ABS_SPEED      = 0x18FEBF0B; //Byte [0] LSB, Byte [1] MSB - Speed from ABS Controller mph x 405
+
+
+const uint32_t CAN_ID_DISTANCE      = 0x18F51300; //Byte [0] LSB, Byte [3] MSB
+const uint32_t CAN_ID_TRIP          = 0x18F91600; //Byte [0] LSB, Byte [3] MSB
 
 
 //Variables to hold coresponding values:
@@ -85,7 +89,7 @@ int PID_Count[100];
 int PID_ListPtr = 0;
 
 String sSHIFTER, sSPEED, sRPM, sCEL, sFUEL_LEVEL, sENG_TEMP, s4WD, sDIFFLOCK, sTHROTTLE, sHANDBRAKE, sFOOTBRAKE, sSEATBELT, sMESSAGE; 
-int nCURRENT, nPACKVOLTS, nSOC, nHIGHTEMP, nCCL, nDCL, nECU_Speed;
+int nCURRENT, nPACKVOLTS, nSOC, nHIGHTEMP, nCCL, nDCL, nECU_Speed, nOdoCtr;
 byte nORrion_Flags;
 double dSpeed,dLast_LAT, dLast_LNG;
 long nRPM_Substitute, nSpeed_Substitute, nTemp_Substitute, nFuel_Substitute, lDistance, lEEPROM_Distance, lEEPROM_Distance_Last;
@@ -152,9 +156,9 @@ unsigned int Value, ValueA, ValueB;
     Value = frame.buf[0];
     if (Value == 0x37) {
       sHANDBRAKE = "APP"; 
-    } else if (Value == 0x33){
+    } else {
       sHANDBRAKE = "REL";
-    } else sHANDBRAKE = String(Value,HEX);
+    }
   }
 
   
@@ -262,7 +266,7 @@ unsigned int Value, ValueA, ValueB;
       //Display RPM/100
       dSpeed = dRPM / 100;  
     }
-    Serial.print("RPM: "); Serial.print(dRPM);
+    //Serial.print("RPM: "); Serial.print(dRPM);
     
     
     
@@ -278,6 +282,12 @@ void vehicle_got_frame( const CAN_message_t &orig_frame) {
   CANFrame frame = orig_frame;
 
   frame.seq = 1; 
+
+  if(((frame.get_id() & 0x00FFFF00)==(CAN_ID_ABS_SPEED & 0x00FFFF00))) {
+    //This is the Speed sent by the ABS Controller
+    nSpeed_Substitute = (frame.buf[1]*255 + frame.buf[0]);
+  }
+
 
   //Everything from the Vehicle needs to be passed to the ECU
   CAN_ECU.write(frame);
@@ -303,7 +313,9 @@ void ecu_got_frame( const CAN_message_t &orig_frame) {
 
   //Some messages need to be passed on, others processed.
   uint32_t lPID = (frame.get_id() & 0x00FFFF00);
+
   
+ 
   //These are the frames to block & substitute with values from EV CANBUS / GPS
   if(lPID==(CAN_ID_SPEED & 0x00FFFF00)) {
     //Substitute speed values & send.  Values updated in Loop.
@@ -311,15 +323,22 @@ void ecu_got_frame( const CAN_message_t &orig_frame) {
     frame.buf[2] = byte(int(int(nSpeed_Substitute) & 0xFF00)/255);    
   }
   if(lPID==(CAN_ID_RPM & 0x00FFFF00)) {
+    //request more data
+    RequestOrionData("V"); RequestOrionData("C");
     frame.buf[0] = byte(nRPM_Substitute & 0x00FF);  //1000 rpm
     frame.buf[1] = byte(int(nRPM_Substitute & 0xFF00)/255);     
   }
   if(lPID==(CAN_ID_ENG_TEMP & 0x00FFFF00)) {
+    //request more data
+    RequestOrionData("T");
     frame.buf[0] = byte(nTemp_Substitute);  //Byte [0] - Engine Temperature (Degrees C + 40)    
   }
   if(lPID==(CAN_ID_FUEL_LEVEL & 0x00FFFF00)) {
+    //request more data
+    RequestOrionData("S");
     frame.buf[1] = byte(nFuel_Substitute);  //SOC o to 100.  Byte [1] - Fuel level 0-240    
   }
+  
   
   
   
@@ -330,11 +349,13 @@ void ecu_got_frame( const CAN_message_t &orig_frame) {
 
     //A subset need data extracting
     if((lPID==(CAN_ID_SHIFTER & 0x00FFFF00)) || (lPID==(CAN_ID_FOOTBRAKE & 0x00FFFF00)) || (lPID==(CAN_ID_SEATBELT & 0x00FFFF00)) || (lPID==(CAN_ID_HANDBRAKE & 0x00FFFF00))) {
+      //request more data
+      RequestOrionData("L");
       got_ecu_frame(frame, orig_frame.bus);
     }
   }
   //Lastly request Data from Orion.  This keeps it sort of IRQ driven
-  RequestOrionData();
+  //RequestOrionData();
 }
 
 
@@ -403,7 +424,7 @@ bool bTriangle = false; //Show the triangle dash warning
   
 
 
-  if(millis()-lDispTimer > 10000) {
+  if(millis()-lDispTimer > 30000) {
     lDispTimer = millis();
 
     //Serial.print("Gear="); Serial.print(sSHIFTER); //Works
@@ -419,34 +440,42 @@ bool bTriangle = false; //Show the triangle dash warning
     //Serial.print("|FtBrk="); Serial.print(sFOOTBRAKE);  //Works
     //Serial.print("|Belt="); Serial.print(sSEATBELT);  //Works
 
-    Serial.print("m since last charge = "); Serial.print(lDistance);
+    Serial.print("m since last charge = "); Serial.print(lEEPROM_Distance);
     Serial.print(",  Current SoC %= "); Serial.print(nSOC);
     Serial.print(",  m on last charge = "); Serial.print(EEPROM.read(5)<<8 + EEPROM.read(4));
     Serial.print(",  Last DoD %= "); Serial.print(EEPROM.read(6));
+    int nMLC = EEPROM.read(5)<<8 + EEPROM.read(4);
+    int nLDOD = EEPROM.read(6);
+    if (nLDOD>100) nLDOD = 100;
+    if (nLDOD<1) nLDOD = 1;
+    int nCalcPrevRange = 100/nLDOD * nMLC;
+    int nCalcCurrRange = nSOC * (nMLC /nLDOD);
+    Serial.print(",  Prev Rge= "); Serial.print(nCalcPrevRange);
+    Serial.print(",  Remain Rge %= "); Serial.print(nCalcCurrRange);
     
     Serial.println();
   }
 
   //Several things affect throttle map and speed limit.  I hope this logic is sound!
   //Throttle map just reduces the peak torque / current to 50%
-  if((sSHIFTER == "H") && (nSOC > 40) && (sSEATBELT != "REL")) {
+  if((sSHIFTER == "H") && (nSOC > 30) && (sSEATBELT != "REL")) {
     digitalWrite(THROTTLE_MAP, LOW); //Change the throttle curve to be more aggressive  
     digitalWrite(SPEED_LIMIT, LOW); //Don't limit the speed
     bTriangle = false;  //Set Triangle speed warning
-  } else if((sSHIFTER == "L") && (nSOC > 40) && (sSEATBELT != "REL")) {
+  } else if((sSHIFTER == "L") && (nSOC > 30) && (sSEATBELT != "REL")) {
     digitalWrite(THROTTLE_MAP, HIGH); //Change the throttle curve to be more gentle  
     digitalWrite(SPEED_LIMIT, LOW); //Don't limit the speed
 //    Serial.println("Torque=50%, Speed=MAX");
     bTriangle = false;  //Set Triangle speed warning
     
-  } else if(((sSHIFTER == "L") || (sSHIFTER == "H")) && (nSOC <= 40) && (nSOC > 10) && (sSEATBELT != "REL")) {
+  } else if(((sSHIFTER == "L") || (sSHIFTER == "H")) && (nSOC <= 30) && (nSOC > 10) && (sSEATBELT != "REL")) {
     digitalWrite(THROTTLE_MAP, HIGH); //Change the throttle curve to be more gentle  
     digitalWrite(SPEED_LIMIT, LOW); //Don't limit the speed
 //    Serial.println("Torque=50%, Speed=MAX");
     bTriangle = false;  //Set Triangle speed warning
     
   } else {
-    digitalWrite(THROTTLE_MAP, HIGH); //Change the throttle curve to be more gentle  
+    digitalWrite(THROTTLE_MAP, LOW); //Change the throttle curve to be more gentle  
     digitalWrite(SPEED_LIMIT, HIGH); //limit the speed to 10mph
 //    Serial.println("Torque=50%, Speed=10mph");
     bTriangle = true;  //Set Triangle speed warning
@@ -454,7 +483,12 @@ bool bTriangle = false; //Show the triangle dash warning
     //Serial.println():
   }
 
-
+  if(sHANDBRAKE == "APP") {
+    //If handbrake applied, limit torque & speed regardless
+    digitalWrite(THROTTLE_MAP, LOW); //Change the throttle curve to be more gentle  
+    digitalWrite(SPEED_LIMIT, HIGH); //limit the speed to 10mph
+    //bTriangle = true;  //Set Triangle speed warning
+  }
 
   SendMessage.len = 8;
   SendMessage.flags.extended = true;
@@ -466,6 +500,7 @@ bool bTriangle = false; //Show the triangle dash warning
     SendMessage.buf[1] = 0b00000000;
     SendMessage.buf[2] = 0b00000000;
     SendMessage.buf[3] = 0b00000000;
+
 
     if(nHIGHTEMP>60) SendMessage.buf[0] = SendMessage.buf[0] + 1;  //Set temp warning if over 60C 
     if(bTriangle) SendMessage.buf[0] = SendMessage.buf[0] + 4;  //Set Triangle warning if speed limited 
@@ -511,7 +546,7 @@ bool bTriangle = false; //Show the triangle dash warning
   nRPM_Substitute = nCURRENT * nPACKVOLTS / 6.5 +800; //Value 1000 to 10,000 for 0 to 40kW
 
   //SPEED Only send if signal quality good and speed >=2mph
-  if((gps.hdop.value() < 101)) {
+  if((gps.hdop.value() < 160)) {
     nSpeed_Substitute = gps.speed.mph() * 405.0;
     //Serial.print("Speed = "); Serial.println(nSpeed_Substitute);
 
@@ -593,7 +628,7 @@ bool bTriangle = false; //Show the triangle dash warning
  
 }
 
-void RequestOrionData() {
+void RequestOrionData(String sDataType) {
 //To get data from the Orion BMS, you have to ask for it!
 //Data is requested only after a packet is received from the ECU - to limit the data volume
 
@@ -615,42 +650,53 @@ CAN_message_t SendMessage;
     SendMessage.buf[1] = 0x22;  //Request Data Mode
 
     //Status
-    SendMessage.buf[2] = 0xF0;  //PID
-    SendMessage.buf[3] = 0x04;  //PID
-    CAN_EV.write(SendMessage);
-    
+    if(sDataType=="L" || sDataType=="") {
+      SendMessage.buf[2] = 0xF0;  //PID
+      SendMessage.buf[3] = 0x04;  //PID
+      CAN_EV.write(SendMessage);
+    }
 
     //Current
-    SendMessage.buf[2] = 0xF0;  //PID
-    SendMessage.buf[3] = 0x15;  //PID
-    CAN_EV.write(SendMessage);
+    if(sDataType=="C" || sDataType=="") {
+      SendMessage.buf[2] = 0xF0;  //PID
+      SendMessage.buf[3] = 0x15;  //PID
+      CAN_EV.write(SendMessage);
+    }
     
     //Voltage
-    SendMessage.buf[2] = 0xF0;  //PID
-    SendMessage.buf[3] = 0x0D;  //PID
-    CAN_EV.write(SendMessage);
+    if(sDataType=="V" || sDataType=="") {
+      SendMessage.buf[2] = 0xF0;  //PID
+      SendMessage.buf[3] = 0x0D;  //PID
+      CAN_EV.write(SendMessage);
+    }
     
     //SOC
-    SendMessage.buf[2] = 0xF0;  //PID
-    SendMessage.buf[3] = 0x0F;  //PID
-    CAN_EV.write(SendMessage);
+    if(sDataType=="S" || sDataType=="") {
+      SendMessage.buf[2] = 0xF0;  //PID
+      SendMessage.buf[3] = 0x0F;  //PID
+      CAN_EV.write(SendMessage);
+    }
     
     //Temperature
-    SendMessage.buf[2] = 0xF0;  //PID
-    SendMessage.buf[3] = 0x28;  //PID
-    CAN_EV.write(SendMessage);
-    
-/*
+    if(sDataType=="T" || sDataType=="") {
+      SendMessage.buf[2] = 0xF0;  //PID
+      SendMessage.buf[3] = 0x28;  //PID
+      CAN_EV.write(SendMessage);
+    } 
+
     //CCL
-    SendMessage.buf[2] = 0xF0;  //PID
-    SendMessage.buf[3] = 0x0A;  //PID
-    CAN_EV.write(SendMessage);
-    
+    if(sDataType=="CCL" || sDataType=="") {
+      SendMessage.buf[2] = 0xF0;  //PID
+      SendMessage.buf[3] = 0x0A;  //PID
+      CAN_EV.write(SendMessage);
+    }
+       
     //DCL
-    SendMessage.buf[2] = 0xF0;  //PID
-    SendMessage.buf[3] = 0x0B;  //PID
-    CAN_EV.write(SendMessage);
-*/
+    if(sDataType=="DCL" || sDataType=="") {
+      SendMessage.buf[2] = 0xF0;  //PID
+      SendMessage.buf[3] = 0x0B;  //PID
+      CAN_EV.write(SendMessage);
+    }
   }
 
 }
@@ -714,5 +760,30 @@ CAN_message_t SendMessage;
     //Serial.println("Throttle");
     Value = frame.buf[6];  //Range 25 to 250
     sTHROTTLE = String(Value); 
+  }
+
+
+
+  long calcMicrosecODO(float speedKMH){
+  long uS;
+  float freq;
+  float speedMPH;
+   
+  Serial.print("Speed = ");
+  Serial.print(speedKMH/100);
+  Serial.println(" km/h");
+  speedMPH = speedKMH / 160.934;
+  // Required frequency for timer 1 ISR
+  //  1.15 is 4140 (Pulse per Mile) / 3600 (1hr in seconds)
+  //  0.7146 is 2572.5 (pulse per KM) / 3600
+  freq = speedMPH * 1.15; 
+  Serial.print("Freq = ");
+  Serial.print(freq);
+  Serial.println(" Hz");
+  uS = 1000000/freq;
+  if(uS < 4500000 && uS > 0){
+    return (uS);}
+  else {
+    return (4500000);
   }
 */
