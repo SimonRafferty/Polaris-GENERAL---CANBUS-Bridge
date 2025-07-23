@@ -132,12 +132,23 @@ void got_ecu_frame(CANFrame &frame, uint8_t which_interface) {
   }
   if(lPID==(CAN_ID_HANDBRAKE & 0x00FFFF00)) {
     Value = frame.buf[0];
+    static bool lastHandbrakeState = false;
+    
     if (Value == 0x37) {
       sHANDBRAKE = "APP"; 
       nPolaris_Flags = nPolaris_Flags | 0B00100000; //Set Flag
+      
+      // Emergency fault reset: Single handbrake application
+      if(!lastHandbrakeState) { // Just applied handbrake
+        Serial.println("EMERGENCY BMS FAULT RESET TRIGGERED!");
+        RequestOrionData("F"); // Clear faults immediately
+      }
+      lastHandbrakeState = true;
+      
     } else {
       sHANDBRAKE = "REL";
       nPolaris_Flags = nPolaris_Flags & 0B11011111; //Reset Flag
+      lastHandbrakeState = false;
     }
   }
   
@@ -518,11 +529,34 @@ void RequestOrionData(String sDataType) {
 
     //Request data from Orion
 
-    //Message to clear fault codes. Only called once on startup
+    //Message to clear fault codes. Only called on startup
     if(sDataType=="F") {
+      // Clear Diagnostic Information (Service 0x14) - Standard UDS/OBD2 approach
       SendMessage.id = 0x07E3;
-      SendMessage.buf[0] = 0x01;  //Length 1 Bytes
-      SendMessage.buf[1] = 0x04;  //Clear Faults mode
+      SendMessage.len = 8;
+      SendMessage.buf[0] = 0x04;  //Length 4 Bytes
+      SendMessage.buf[1] = 0x14;  //Clear Diagnostic Information service
+      SendMessage.buf[2] = 0xFF;  //Clear all DTCs (Group of DTC = 0xFFFFFF)
+      SendMessage.buf[3] = 0xFF;  //Clear all DTCs
+      SendMessage.buf[4] = 0xFF;  //Clear all DTCs
+      SendMessage.buf[5] = 0x00;  //Padding
+      SendMessage.buf[6] = 0x00;  //Padding
+      SendMessage.buf[7] = 0x00;  //Padding
+      canMutex.lock();
+      CAN_EV.write(SendMessage);
+      canMutex.unlock();
+      
+      delay(50); // Give BMS time to process
+      
+      // Alternative approach - Clear all fault flags using Control Service
+      SendMessage.buf[0] = 0x02;  //Length 2 Bytes
+      SendMessage.buf[1] = 0x31;  //Routine Control Service
+      SendMessage.buf[2] = 0x01;  //Start routine
+      SendMessage.buf[3] = 0x00;  //Padding
+      SendMessage.buf[4] = 0x00;  //Padding
+      SendMessage.buf[5] = 0x00;  //Padding
+      SendMessage.buf[6] = 0x00;  //Padding
+      SendMessage.buf[7] = 0x00;  //Padding
       canMutex.lock();
       CAN_EV.write(SendMessage);
       canMutex.unlock();
@@ -642,8 +676,16 @@ void setup() {
   CAN_ECU.enableFIFOInterrupt();
   CAN_ECU.mailboxStatus();
 
-  //Clear fault codes once on startup
-  RequestOrionData("F"); //Clear BMS Fault codes
+  //Clear fault codes multiple times on startup with delays to ensure BMS is ready
+  Serial.println("Clearing BMS fault codes...");
+  delay(1000); // Give BMS time to boot up
+  for(int i = 0; i < 3; i++) {
+    RequestOrionData("F"); //Clear BMS Fault codes
+    delay(500); // Wait between attempts
+    Serial.print("Fault clear attempt ");
+    Serial.println(i + 1);
+  }
+  Serial.println("Fault clearing complete");
 
   // Start RTOS threads
   threads.addThread(vehicleReceiveThread);
