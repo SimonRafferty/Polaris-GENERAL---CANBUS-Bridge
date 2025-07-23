@@ -1,5 +1,5 @@
 # Polaris-GENERAL---CANBUS-Bridge
-Used to hack the canbus on my Polaris EV Conversion
+Multitasking Canbus bridge on my Polaris EV Conversion using RTOS
 
 While the code is intended to hack the CANBUS on a Polaris General, the approach and hardware could be used to hack the CANBUS on pretty much any vehicle.
 
@@ -18,15 +18,4 @@ from the EV CAN network.
 Initially, I had problems with the rate messages were sent.  The dash expected messages to arrive at a certain frequency for different displays.  Too infrequent & the dash didn't update
 too often and it jammed the bus.  My solution is only to send data when a message arrives from the ECU.  It obviously knows how often they need sending, so I just use it's timing.
 
-The whole thing works really well!
-
-One problem I had was the ECU stopped sending road-speed data once the engine was removed (no idea why).  It is (I think) requesting the data from the ABS controller, calculating speed
-and sending it over CAN.  Once the engine was gone, it stopped requesting and sending the speed data - though the ABS continues to work OK.
-I solved this by adding a GPS and reading speed data from that.  A GPS based speedo is no bad thing really - at least it's accurate.
-
-*Update* I found speed data being sent by the ABS Controller.  Now that data is used to drive the speedo until the GPS has signal, then switches to GPS speed.
-
-I've yet to figure out how the odometer on the dash was driven - and implement a way of spoofing the data.  Ping me a message if you have any info on how CANBUS odometers work?  
-Is it a 'tick' message sent, say every few feet or an absolute distance travelled since the ECU was installed?
-
-*Update* I found someone on line had figured it out for another vehicle.  There was a byte in the Check Engine Light frame which incremented by one for every 0.05 miles (I'm guessing it's actually every 0.1km).  I've looked for this, but not found it YET!
+*Update* This branch is for the RTOS multitasking version.  In the previous version the rate at which messages were being received, effectively blocked transmissions.  I had to limit the packets sent to non-essential things, like the tachometer.
